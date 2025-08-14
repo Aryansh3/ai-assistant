@@ -25,7 +25,7 @@ def speak(text):
     print(f"Alexa says: {text}")
     engine.say(text)
     engine.runAndWait()
-
+#hello
 # ======================
 # SPEECH RECOGNITION SETUP
 # ======================
