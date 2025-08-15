@@ -1,6 +1,6 @@
 
 
-
+import re
 import requests
 import speech_recognition as sr
 import pyttsx3
@@ -16,15 +16,34 @@ MODEL_NAME = "sonar-pro"  # Adjust model if needed
 # ======================
 # TEXT-TO-SPEECH SETUP
 # ======================
+'''
 engine = pyttsx3.init()
 engine.setProperty('rate', 160)    # Slightly faster speech rate
-engine.setProperty('volume', 1.0)  # Maximum volume
+engine.setProperty('volume', 1.0)  # Maximum 
+'''
 
 def speak(text):
-    """Speak the given text out loud and print it."""
+    """
+    Creates a new TTS engine instance and adds a leading pause to prevent clipping.
+    """
+    # 1. Initialize a new engine instance INSIDE the function
+    engine = pyttsx3.init()
+
+    # 2. Set properties for this new instance
+    engine.setProperty('rate', 160)
+    engine.setProperty('volume', 1.0)
+    
+    # This creates the string with the needed pause
+    text_to_say = f". {text}"
+
+    # 3. Speak and wait
     print(f"Alexa says: {text}")
-    engine.say(text)
+    
+    # Use the MODIFIED variable here
+    engine.say(text_to_say) 
+    
     engine.runAndWait()
+    # 4. The engine instance is automatically discarded when the function ends
 #hello
 # ======================
 # SPEECH RECOGNITION SETUP
@@ -34,7 +53,7 @@ def listen():
     recognizer = sr.Recognizer()
     with sr.Microphone() as source:
         print("Listening... Please speak now.")
-        recognizer.adjust_for_ambient_noise(source, duration=0.5)
+        recognizer.adjust_for_ambient_noise(source, duration=1)
         audio = recognizer.listen(source)
         try:
             text = recognizer.recognize_google(audio)
@@ -60,6 +79,7 @@ def query_perplexity(prompt):
     data = {
         "model": MODEL_NAME,
         "messages": [
+            {"role": "system", "content": "Be a helpful and brief assistant. Keep your answers concise and to the point."},
             {"role": "user", "content": prompt}
         ],
         "stream": False  # Non-streaming for simplicity and clear replies
@@ -73,6 +93,18 @@ def query_perplexity(prompt):
         return answer
     except Exception as e:
         return f"Sorry, there was an error getting the answer: {e}"
+    
+import re
+
+def clean_text(text):
+    """Remove special characters and citation markers for TTS compatibility."""
+    # First, remove markdown characters like *, #, _, `
+    text = re.sub(r'[\*#_`\\]', '', text)
+    
+    # Second, remove citation markers like [1], [2], [5], etc.
+    text = re.sub(r'\[\d+\]', '', text)
+    
+    return text.strip()
 
 # ======================
 # MAIN FUNCTION
@@ -83,12 +115,22 @@ def main():
         user_input = listen()
         if not user_input:
             continue
-        if user_input.lower() in ["exit", "stop", "quit", "bye", "goodbye"]:
+        if user_input.lower() in ["exit", "stop", "quit", "bye", "goodbye","stop responding"]:
             speak("Goodbye! Have a great day.")
             break
 
+        # Get the original answer from the API
         answer = query_perplexity(user_input)
-        speak(answer)
+        
+        # Clean the answer before speaking it
+        speakable_answer = clean_text(answer)
+        
+        # Pass the cleaned text to your speak function
+        speak(speakable_answer)
 
 if __name__ == "__main__":
     main()
+
+
+
+#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
