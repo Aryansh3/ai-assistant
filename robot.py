@@ -1,158 +1,198 @@
-import threading
 import re
 import requests
 import speech_recognition as sr
 import pyttsx3
 import json
+import time
+import threading
+import keyboard
+
+# ======================
+# SHARED RESOURCES for pyttsx3
+# ======================
+is_speaking = False
+engine = pyttsx3.init()
+engine.setProperty('rate', 160)
+engine.setProperty('volume', 1.0)
+
+# Callback function for when speech finishes
+def on_end(name, completed):
+    global is_speaking
+    is_speaking = False
+
+engine.connect('finished-utterance', on_end)
 
 # ======================
 # CONFIGURATION
 # ======================
 PERPLEXITY_API_KEY = "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"  # Replace with your actual Perplexity API key
 PERPLEXITY_API_URL = "https://api.perplexity.ai/chat/completions"
-MODEL_NAME = "sonar-pro"  # Adjust model if needed
+MODEL_NAME = "sonar-pro"
 
 # ======================
-# SPEAKING & INTERRUPT SUPPORT
+# HELPER FUNCTIONS
 # ======================
-speak_thread = None
-speaking_engine = None
-stop_speaking_flag = False
+def animate_listening(stop_event):
+    animation_chars = ['|', '/', '-', '\\']
+    idx = 0
+    while not stop_event.is_set():
+        char = animation_chars[idx % len(animation_chars)]
+        print(f"Listening... {char}", end="\r")
+        idx += 1
+        time.sleep(0.1)
+    print(" " * 20, end="\r")
 
-def speak(text):
-    """
-    TTS in a separate thread and supports interruption.
-    """
-    global speaking_engine, stop_speaking_flag
-    speaking_engine = pyttsx3.init()
-    speaking_engine.setProperty('rate', 160)
-    speaking_engine.setProperty('volume', 1.0)
-    text_to_say = f". {text}"  # Leading period to help with TTS clipping
-    stop_speaking_flag = False
-
-    def check_stop(name, completed):
-        if stop_speaking_flag and speaking_engine is not None:
-            speaking_engine.stop()
-    speaking_engine.connect('started-word', check_stop)
-    print(f"AI says: {text}")
-    speaking_engine.say(text_to_say)
-    speaking_engine.runAndWait()
-    speaking_engine = None
-
-def stop_speaking():
-    """
-    Safely stop any ongoing speech immediately.
-    """
-    global stop_speaking_flag, speaking_engine
-    stop_speaking_flag = True
-    if speaking_engine is not None:
-        speaking_engine.stop()
-
-def speak_in_thread(text):
-    """
-    Start TTS in a background thread, joining previous if running.
-    """
-    global speak_thread
-    if speak_thread and speak_thread.is_alive():
-        stop_speaking()
-        speak_thread.join()
-    speak_thread = threading.Thread(target=speak, args=(text,))
-    speak_thread.start()
-
-# ======================
-# SPEECH RECOGNITION WITH PROMPT
-# ======================
-def listen_with_interrupt():
-    """
-    Listen from microphone and return text, allowing TTS interruption.
-    """
-    recognizer = sr.Recognizer()
-    with sr.Microphone() as source:
-        print("Listening... Please speak now.")
-        recognizer.adjust_for_ambient_noise(source, duration=1)
-        audio = recognizer.listen(source)
-        try:
-            text = recognizer.recognize_google(audio)
-            print(f"Your question: {text}")
-            return text.strip()
-        except sr.UnknownValueError:
-            speak_in_thread("Sorry, say it again.")
-            return ""
-        except sr.RequestError:
-            speak_in_thread("Sorry, I am having trouble connecting to the speech service.")
-            return ""
-
-# ======================
-# PERPLEXITY API QUERY FUNCTION
-# ======================
-def query_perplexity(prompt):
-    """
-    Send prompt to Perplexity API, wait for response, return text.
-    """
-    headers = {
-        "Authorization": f"Bearer {PERPLEXITY_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    data = {
-        "model": MODEL_NAME,
-        "messages": [
-            {"role": "system", "content": "Be a helpful and brief assistant. Keep your answers concise and to the point."},
-            {"role": "user", "content": prompt}
-        ],
-        "stream": False
-    }
-    try:
-        response = requests.post(PERPLEXITY_API_URL, headers=headers, json=data)
-        response.raise_for_status()
-        result = response.json()
-        answer = result["choices"][0]["message"]["content"].strip()
-        return answer
-    except Exception as e:
-        return f"Sorry, there was an error getting the answer: {e}"
-
-# ======================
-# TTS CLEANING FUNCTION
-# ======================
 def clean_text(text):
-    """
-    Remove special characters and citation markers for TTS compatibility.
-    """
-    text = re.sub(r'[\*\#\_\`\\]', '', text)          # Remove markdown
-    text = re.sub(r'\[\d+\]', '', text)               # Remove citations like [1], 
+    text = re.sub(r'[\*#_`\\]', '', text)
+    text = re.sub(r'\[\d+\]', '', text)
     return text.strip()
 
 # ======================
-# MAIN LOGIC
+# SPEAK FUNCTIONS (using a consistent, non-blocking method)
 # ======================
+def speak_uninterruptible(text):
+    """
+    Speaks a short message using the consistent, non-blocking event loop.
+    """
+    global is_speaking
+    clean_text_full = clean_text(text)
+    if not clean_text_full:
+        return
+
+    print(f"AI says: {clean_text_full}")
+    
+    is_speaking = True
+    engine.say(clean_text_full)
+    engine.startLoop(False)
+    while is_speaking:
+        engine.iterate()
+        time.sleep(0.1)
+    engine.endLoop()
+
+def speak(text):
+    """
+    Speaks a long response that can be interrupted by the 'esc' key.
+    Returns True if interrupted, False otherwise.
+    """
+    global is_speaking
+    clean_text_full = clean_text(text)
+    if not clean_text_full:
+        return False
+
+    print(f"AI says: {clean_text_full}")
+    interrupted = False
+    
+    is_speaking = True
+    engine.say(clean_text_full)
+    
+    engine.startLoop(False)
+    
+    while is_speaking:
+        if keyboard.is_pressed('esc'):
+            engine.stop()
+            print("\n--- Speech Interrupted by User ---")
+            interrupted = True
+            is_speaking = False # Manually end the loop
+        engine.iterate()
+        time.sleep(0.1)
+
+    engine.endLoop()
+    
+    return interrupted
+
+# ======================
+# MAIN LISTEN FUNCTION
+# ======================
+def listen():
+    """Waits for a user command, starting with a verbal cue."""
+    speak_uninterruptible("Listening")
+
+    recognizer = sr.Recognizer()
+    with sr.Microphone() as source:
+        print("\nPreparing to listen...")
+        recognizer.adjust_for_ambient_noise(source, duration=0.5)
+        
+        stop_animation_event = threading.Event()
+        animation_thread = threading.Thread(target=animate_listening, args=(stop_animation_event,))
+        animation_thread.start()
+
+        try:
+            audio = recognizer.listen(source)
+            stop_animation_event.set()
+            animation_thread.join()
+            text = recognizer.recognize_google(audio)
+            print(f"You said: {text}")
+            return text.strip()
+        except (sr.UnknownValueError, sr.RequestError) as e:
+            stop_animation_event.set()
+            animation_thread.join()
+            if isinstance(e, sr.RequestError):
+                speak_uninterruptible("Sorry, my speech service is down.")
+            return ""
+
+# ======================
+# API AND MAIN LOGIC
+# ======================
+def query_perplexity(prompt):
+    headers = {"Authorization": f"Bearer {PERPLEXITY_API_KEY}", "Content-Type": "application/json"}
+    data = {"model": MODEL_NAME, "messages": [{"role": "system", "content": "Be a helpful and brief assistant."}, {"role": "user", "content": prompt}]}
+    try:
+        response = requests.post(PERPLEXITY_API_URL, headers=headers, json=data)
+        response.raise_for_status()
+        return response.json()["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        return f"Sorry, there was an error: {e}"
+
 def main():
-    global speak_thread
-    speak_in_thread("Helooo! I am lixus AI assistant. How can I help you today?")
+    speak_uninterruptible("Hello! I am your AI assistant. Press Escape at any time to interrupt me. How can I help you today?")
+    
     while True:
-        user_input = listen_with_interrupt()
+        user_input = listen()
         if not user_input:
             continue
-
-        lower_input = user_input.lower()
-        if lower_input in ["exit", "quit", "bye", "goodbye", "stop", "stop responding"]:
-            stop_speaking()
-            speak_in_thread("Goodbye! Have a great day.")
-            if speak_thread:
-                speak_thread.join()
+            
+        if user_input.lower() in ["exit", "stop", "quit", "bye", "goodbye"]:
+            speak_uninterruptible("Goodbye! Have a great day.")
+            time.sleep(1)
             break
 
-        if lower_input in ["interrupt", "cancel", "pause", "wait", "shut up"]:
-            stop_speaking()
-            speak_in_thread("sorry, I'll wait for your next command.")
-            continue
-
-        if lower_input in ["thanks", "thank you", "thank", "thank's"]:
-            speak_in_thread("You're welcome! I am happy you got help.")
-            continue
-
-        stop_speaking()  # Ensure any ongoing TTS ends
         answer = query_perplexity(user_input)
-        speakable_answer = clean_text(answer)
-        speak_in_thread(speakable_answer)
+        
+        was_interrupted = speak(answer)
+
+        if was_interrupted:
+            continue
 
 if __name__ == "__main__":
     main()
+
+'''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'''
+
+
+
+'''
+import RPi.GPIO as GPIO
+import time
+
+# --- Setup the GPIO Pin ---
+# Use the BCM pin numbering scheme
+GPIO.setmode(GPIO.BCM) 
+BUTTON_PIN = 17 
+# Set up the pin as an input with a pull-up resistor
+GPIO.setup(BUTTON_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP) 
+#--------------------------
+
+# In your speak() function, replace the keyboard check with a GPIO check:
+while is_speaking:
+    # GPIO.input will be 0 (False) when the button is pressed
+    if not GPIO.input(BUTTON_PIN): 
+        engine.stop()
+        print("\n--- Speech Interrupted by Switch ---")
+        interrupted = True
+        is_speaking = False
+    engine.iterate()
+    time.sleep(0.1)
+
+# At the end of your script, you'd add a cleanup line:
+# GPIO.cleanup()
+'''
